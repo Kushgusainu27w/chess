@@ -17,7 +17,7 @@ gcc chess.c -o chess_gui.exe -I src/include ./libSDL2.a -luser32 -lgdi32 -lwinmm
 ### Default Output
 ```bash
 gcc chess.c
-.\a.exe --cli
+.\chess.exe --cli
 ```
 
 ## What Each Does

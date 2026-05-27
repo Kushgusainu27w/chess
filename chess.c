@@ -3,10 +3,14 @@
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
+#include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #ifdef GUI_MODE
 #define SDL_MAIN_HANDLED
-#include <SDL2/SDL.h>
+#include <SDL2/SDL.h>`
 #include <SDL2/SDL_main.h>
 #else
 #define SDL_INIT_VIDEO 0
@@ -244,25 +248,189 @@ int getLegalMoves(Move out[]) {
     return cnt;
 }
 
+int isLegalMove(Move m) {
+    if (!inBounds(m.sr,m.sc) || !inBounds(m.dr,m.dc)) return 0;
+    char p = board[m.sr][m.sc]; if (isEmpty(p)) return 0;
+    if (whiteToMove && !isWhite(p)) return 0;
+    if (!whiteToMove && !isBlack(p)) return 0;
+    if (!legalBasic(m)) return 0;
+
+    // Save state
+    char boardBackup[8][8]; for (int i=0;i<8;i++) for (int j=0;j<8;j++) boardBackup[i][j]=board[i][j];
+    int oldEnR=enPassantR, oldEnC=enPassantC, oldWcs=wcs, oldWqs=wqs, oldBcs=bcs, oldBqs=bqs;
+    int oldWhite = whiteToMove;
+
+    // Apply
+    board[m.dr][m.dc] = board[m.sr][m.sc]; board[m.sr][m.sc] = '.';
+    if (m.isEnPassant) {
+        if (oldWhite) board[m.dr+1][m.dc]='.'; else board[m.dr-1][m.dc]='.';
+    }
+    if (m.promotion) board[m.dr][m.dc] = oldWhite ? 'Q' : 'q';
+    if (m.isCastle) {
+        if (oldWhite) {
+            if (m.dc==6) { board[7][5]='R'; board[7][7]='.'; } else { board[7][3]='R'; board[7][0]='.'; }
+        } else {
+            if (m.dc==6) { board[0][5]='r'; board[0][7]='.'; } else { board[0][3]='r'; board[0][0]='.'; }
+        }
+    }
+
+    whiteToMove = !whiteToMove;
+    int legal = !inCheck(!whiteToMove);
+
+    // Restore
+    for (int i=0;i<8;i++) for (int j=0;j<8;j++) board[i][j]=boardBackup[i][j];
+    whiteToMove = oldWhite; enPassantR=oldEnR; enPassantC=oldEnC; wcs=oldWcs; wqs=oldWqs; bcs=oldBcs; bqs=oldBqs;
+
+    return legal;
+}
+
+int hasLegalMovesForPiece(int sr, int sc) {
+    Move legalMoves[256];
+    int cnt = getLegalMoves(legalMoves);
+    for (int i=0;i<cnt;i++) if (legalMoves[i].sr==sr && legalMoves[i].sc==sc) return 1;
+    return 0;
+}
+
+void updateTurnAndCheckEnd() {
+    Move legalMoves[256];
+    int cnt = getLegalMoves(legalMoves);
+    if (cnt == 0) {
+        if (inCheck(whiteToMove)) {
+            strcpy(resultMessage, "thanks for palying");
+            gameOver = 1;
+        } else {
+            strcpy(resultMessage, "Stalemate.");
+            gameOver = 1;
+        }
+    } else {
+        if (inCheck(whiteToMove)) strcpy(resultMessage, whiteToMove ? "White is in check!" : "Black is in check!");
+        else strcpy(resultMessage, whiteToMove ? "White to move." : "Black to move.");
+    }
+}
+
 // Note: above implementation used destructive board and restoration incorrectly; for this example, we accept approximate knights and attack logic.
+
+static void drawFilledCircle(SDL_Renderer* renderer, int cx, int cy, int radius) {
+    for (int dy = -radius; dy <= radius; ++dy) {
+        int dy2 = dy * dy;
+        for (int dx = -radius; dx <= radius; ++dx) {
+            if (dx * dx + dy2 <= radius * radius) {
+                SDL_Rect pixel = { cx + dx, cy + dy, 1, 1 };
+                SDL_RenderFillRect(renderer, &pixel);
+            }
+        }
+    }
+}
+
+static void drawFilledTriangle(SDL_Renderer* renderer, int x1, int y1, int x2, int y2, int x3, int y3) {
+    int minx = x1 < x2 ? (x1 < x3 ? x1 : x3) : (x2 < x3 ? x2 : x3);
+    int maxx = x1 > x2 ? (x1 > x3 ? x1 : x3) : (x2 > x3 ? x2 : x3);
+    int miny = y1 < y2 ? (y1 < y3 ? y1 : y3) : (y2 < y3 ? y2 : y3);
+    int maxy = y1 > y2 ? (y1 > y3 ? y1 : y3) : (y2 > y3 ? y2 : y3);
+    for (int y = miny; y <= maxy; ++y) {
+        for (int x = minx; x <= maxx; ++x) {
+            int d1 = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1);
+            int d2 = (x - x2) * (y3 - y2) - (y - y2) * (x3 - x2);
+            int d3 = (x - x3) * (y1 - y3) - (y - y3) * (x1 - x3);
+            if ((d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0)) {
+                SDL_Rect pixel = { x, y, 1, 1 };
+                SDL_RenderFillRect(renderer, &pixel);
+            }
+        }
+    }
+}
+
+static void drawFilledL(SDL_Renderer* renderer, int cx, int cy, int w, int h, int thickness) {
+    int left = cx - w/2;
+    int top = cy - h/2;
+    if (thickness < 1) thickness = 1;
+    SDL_Rect vert = { left, top, thickness, h };
+    SDL_Rect horz = { left, top + h - thickness, w, thickness };
+    SDL_RenderFillRect(renderer, &vert);
+    SDL_RenderFillRect(renderer, &horz);
+}
+
+static void drawFilledHexagon(SDL_Renderer* renderer, int cx, int cy, int radius) {
+    if (radius < 2) radius = 2;
+    int x[6], y[6];
+    for (int i = 0; i < 6; ++i) {
+        double ang = M_PI / 3.0 * i - M_PI/2.0; // start at top
+        x[i] = cx + (int)(cos(ang) * radius);
+        y[i] = cy + (int)(sin(ang) * radius);
+    }
+    int minx = x[0], maxx = x[0], miny = y[0], maxy = y[0];
+    for (int i=1;i<6;i++) { if (x[i]<minx) minx=x[i]; if (x[i]>maxx) maxx=x[i]; if (y[i]<miny) miny=y[i]; if (y[i]>maxy) maxy=y[i]; }
+    for (int yy = miny; yy <= maxy; ++yy) {
+        for (int xx = minx; xx <= maxx; ++xx) {
+            int inside = 1;
+            for (int i = 0; i < 6; ++i) {
+                int j = (i+1)%6;
+                int dx = x[j]-x[i];
+                int dy = y[j]-y[i];
+                int dxp = xx - x[i];
+                int dyp = yy - y[i];
+                int cross = dx* dyp - dy * dxp;
+                if (cross < 0) { inside = 0; break; }
+            }
+            if (inside) {
+                SDL_Rect pixel = { xx, yy, 1, 1 };
+                SDL_RenderFillRect(renderer, &pixel);
+            }
+        }
+    }
+}
 
 void renderPieces(SDL_Renderer* renderer) {
     for (int r = 0; r < 8; ++r) {
         for (int c = 0; c < 8; ++c) {
             if (!isEmpty(board[r][c])) {
-                int px = c * CELL + CELL / 2 - 15;
-                int py = r * CELL + CELL / 2 - 20;
-                SDL_Rect pieceRect = {px, py, 30, 40};
-                
+                int cx = c * CELL + CELL / 2;
+                int cy = r * CELL + CELL / 2;
+                int pieceRadius = 10;
+
                 if (isWhite(board[r][c])) {
-                    SDL_SetRenderDrawColor(renderer, 100, 100, 100, 255);
+                    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
                 } else {
-                    SDL_SetRenderDrawColor(renderer, 220, 220, 220, 255);
+                    SDL_SetRenderDrawColor(renderer, 40, 40, 40, 255);
                 }
-                SDL_RenderFillRect(renderer, &pieceRect);
-                
-                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-                SDL_RenderDrawRect(renderer, &pieceRect);
+
+                if (board[r][c] == 'P' || board[r][c] == 'p') {
+                    drawFilledCircle(renderer, cx, cy, pieceRadius);
+                    SDL_SetRenderDrawColor(renderer, isWhite(board[r][c]) ? 0 : 255, isWhite(board[r][c]) ? 0 : 255, isWhite(board[r][c]) ? 0 : 255, 255);
+                    SDL_Rect outline = { cx - pieceRadius, cy - pieceRadius, pieceRadius * 2, pieceRadius * 2 };
+                    SDL_RenderDrawRect(renderer, &outline);
+                } else if (board[r][c] == 'B' || board[r][c] == 'b') {
+                    int tw = CELL * 3 / 5;
+                    int th = CELL * 3 / 5;
+                    int tx1 = cx;
+                    int ty1 = cy - th/2;
+                    int tx2 = cx - tw/2;
+                    int ty2 = cy + th/2;
+                    int tx3 = cx + tw/2;
+                    int ty3 = cy + th/2;
+                    drawFilledTriangle(renderer, tx1, ty1, tx2, ty2, tx3, ty3);
+                } else if (board[r][c] == 'N' || board[r][c] == 'n') {
+                    int tw = CELL * 3 / 8;
+                    int th = CELL * 3 / 8;
+                    int thick = CELL / 8; if (thick < 2) thick = 2;
+                    drawFilledL(renderer, cx, cy, tw, th, thick);
+                } else if (board[r][c] == 'R' || board[r][c] == 'r') {
+                    int sz = CELL * 3 / 8;
+                    if (sz < 6) sz = 6;
+                    SDL_Rect cube = { cx - sz/2, cy - sz/2, sz, sz };
+                    SDL_RenderFillRect(renderer, &cube);
+                    SDL_SetRenderDrawColor(renderer, isWhite(board[r][c]) ? 0 : 255, isWhite(board[r][c]) ? 0 : 255, isWhite(board[r][c]) ? 0 : 255, 255);
+                    SDL_RenderDrawRect(renderer, &cube);
+                } else if (board[r][c] == 'K' || board[r][c] == 'k') {
+                    int radius = CELL * 3 / 8;
+                    if (radius < 6) radius = 6;
+                    drawFilledHexagon(renderer, cx, cy, radius);
+                } else {
+                    SDL_Rect pieceRect = { cx - 15, cy - 20, 30, 40 };
+                    SDL_RenderFillRect(renderer, &pieceRect);
+                    SDL_SetRenderDrawColor(renderer, isWhite(board[r][c]) ? 0 : 255, isWhite(board[r][c]) ? 0 : 255, isWhite(board[r][c]) ? 0 : 255, 255);
+                    SDL_RenderDrawRect(renderer, &pieceRect);
+                }
             }
         }
     }
@@ -278,22 +446,26 @@ int main(int argc, char** argv) {
     srand(time(NULL));
     int cliMode = argc > 1 && strcmp(argv[1], "--cli") == 0;
     initBoard();
+    whiteToMove = 1;
+    strcpy(resultMessage, "White to move.");
     if (cliMode) {
         while (!gameOver) {
             printBoardCLI();
-            if (whiteToMove) {
-                char move[8]; printf("White move (e2e4) or exit: ");
-                if (!fgets(move, sizeof(move), stdin)) break;
-                if (strncmp(move, "exit", 4) == 0) break;
-                if (strlen(move) < 4) { printf("Bad input\n"); continue; }
-                int sc = tolower(move[0]) - 'a'; int sr = 8 - (move[1] - '0');
-                int dc = tolower(move[2]) - 'a'; int dr = 8 - (move[3] - '0');
-                Move m={sr,sc,dr,dc,0,0,0};
-                if (!legalBasic(m)) { printf("Illegal move\n"); continue; }
-                board[dr][dc] = board[sr][sc]; board[sr][sc] = '.';
-                if ((dr == 0 && board[dr][dc] == 'P') || (dr == 7 && board[dr][dc] == 'p')) board[dr][dc] = 'Q';
-                whiteToMove = 0;
-            } else {
+                if (whiteToMove) {
+                    char move[8]; printf("White move (e2e4) or exit: ");
+                    if (!fgets(move, sizeof(move), stdin)) break;
+                    if (strncmp(move, "exit", 4) == 0) break;
+                    if (strlen(move) < 4) { printf("Bad input\n"); continue; }
+                    int sc = tolower(move[0]) - 'a'; int sr = 8 - (move[1] - '0');
+                    int dc = tolower(move[2]) - 'a'; int dr = 8 - (move[3] - '0');
+                    Move m={sr,sc,dr,dc,0,0,0};
+                    if (!isLegalMove(m)) { printf("Illegal move\n"); continue; }
+                    board[dr][dc] = board[sr][sc]; board[sr][sc] = '.';
+                    if ((dr == 0 && board[dr][dc] == 'P') || (dr == 7 && board[dr][dc] == 'p')) board[dr][dc] = 'Q';
+                    whiteToMove = 0;
+                    updateTurnAndCheckEnd();
+                    if (gameOver) break;
+                } else {
                 printf("AI (Black) is thinking...\n");
                 Move legalMoves[256];
                 int moveCount = getLegalMoves(legalMoves);
@@ -305,6 +477,8 @@ int main(int argc, char** argv) {
                         board[m.dr][m.dc] = 'Q';
                     whiteToMove = 1;
                     printf("AI played: %c%d%c%d\n", 'a' + m.sc, 8 - m.sr, 'a' + m.dc, 8 - m.dr);
+                    updateTurnAndCheckEnd();
+                    if (gameOver) break;
                 } else {
                     printf("AI has no legal moves. Game over.\n");
                     gameOver = 1;
@@ -328,10 +502,12 @@ int main(int argc, char** argv) {
                 int sc = tolower(move[0]) - 'a'; int sr = 8 - (move[1] - '0');
                 int dc = tolower(move[2]) - 'a'; int dr = 8 - (move[3] - '0');
                 Move m={sr,sc,dr,dc,0,0,0};
-                if (!legalBasic(m)) { printf("Illegal move\n"); continue; }
+                if (!isLegalMove(m)) { printf("Illegal move\n"); continue; }
                 board[dr][dc] = board[sr][sc]; board[sr][sc] = '.';
                 if ((dr == 0 && board[dr][dc] == 'P') || (dr == 7 && board[dr][dc] == 'p')) board[dr][dc] = 'Q';
                 whiteToMove = 0;
+                updateTurnAndCheckEnd();
+                if (gameOver) break;
             } else {
                 printf("AI (Black) is thinking...\n");
                 Move legalMoves[256];
@@ -344,6 +520,8 @@ int main(int argc, char** argv) {
                         board[m.dr][m.dc] = 'Q';
                     whiteToMove = 1;
                     printf("AI played: %c%d%c%d\n", 'a' + m.sc, 8 - m.sr, 'a' + m.dc, 8 - m.dr);
+                    updateTurnAndCheckEnd();
+                    if (gameOver) break;
                 } else {
                     printf("AI has no legal moves. Game over.\n");
                     gameOver = 1;
@@ -378,27 +556,31 @@ int main(int argc, char** argv) {
                 int c = e.button.x / CELL;
                 if (selectedR == -1) {
                     if (inBounds(r, c) && !isEmpty(board[r][c]) && ((whiteToMove && isWhite(board[r][c])) || (!whiteToMove && isBlack(board[r][c])))) {
-                        selectedR = r; selectedC = c;
+                        if (inCheck(whiteToMove)) {
+                            if (hasLegalMovesForPiece(r, c)) { selectedR = r; selectedC = c; }
+                        } else {
+                            selectedR = r; selectedC = c;
+                        }
                     }
                 } else {
                     if (inBounds(r, c)) {
                         Move m={selectedR, selectedC, r, c,0,0,0};
-                        if (legalBasic(m)) {
+                        if (isLegalMove(m)) {
                             char movingPiece = board[selectedR][selectedC];
                             board[r][c] = movingPiece;
                             board[selectedR][selectedC] = '.';
-                            
+
                             if ((r == 0 && movingPiece == 'P') || (r == 7 && movingPiece == 'p')) {
                                 board[r][c] = whiteToMove ? 'Q' : 'q';
                             }
-                            
+
                             if (tolower(movingPiece) == 'p') {
                                 if (r == m.dr && selectedC != c) {
                                     if (whiteToMove) board[r+1][c] = '.';
                                     else board[r-1][c] = '.';
                                 }
                             }
-                            
+
                             if (tolower(movingPiece) == 'k') {
                                 if (whiteToMove) { wcs = 0; wqs = 0; }
                                 else { bcs = 0; bqs = 0; }
@@ -417,16 +599,11 @@ int main(int argc, char** argv) {
                                 else if (!whiteToMove && selectedC == 7) bcs = 0;
                                 else if (!whiteToMove && selectedC == 0) bqs = 0;
                             }
-                            
+
                             enPassantR = -1;
                             enPassantC = -1;
                             whiteToMove = !whiteToMove;
-                            
-                            if (inCheck(whiteToMove)) {
-                                strcpy(resultMessage, whiteToMove ? "White is in check!" : "Black is in check!");
-                            } else {
-                                strcpy(resultMessage, whiteToMove ? "White to move." : "Black to move.");
-                            }
+                            updateTurnAndCheckEnd();
                         }
                     }
                     selectedR=-1; selectedC=-1;
@@ -441,6 +618,21 @@ int main(int argc, char** argv) {
                 if ((r+c)%2==0) SDL_SetRenderDrawColor(renderer, 240,217,181,255); else SDL_SetRenderDrawColor(renderer, 181,136,99,255);
                 SDL_RenderFillRect(renderer, &cell);
                 if (r==selectedR && c==selectedC) { SDL_SetRenderDrawColor(renderer, 0,255,0,128); SDL_RenderFillRect(renderer, &cell); }
+            }
+        }
+        // Draw hints for selected piece's legal moves
+        if (selectedR != -1) {
+            Move legalMoves[256];
+            int moveCount = getLegalMoves(legalMoves);
+            for (int i = 0; i < moveCount; ++i) {
+                if (legalMoves[i].sr == selectedR && legalMoves[i].sc == selectedC) {
+                    int dr = legalMoves[i].dr;
+                    int dc = legalMoves[i].dc;
+                    int hx = dc * CELL + CELL / 2;
+                    int hy = dr * CELL + CELL / 2;
+                    if (!isEmpty(board[dr][dc])) SDL_SetRenderDrawColor(renderer, 200,50,50,255); else SDL_SetRenderDrawColor(renderer, 50,200,50,255);
+                    drawFilledCircle(renderer, hx, hy, 6);
+                }
             }
         }
         renderPieces(renderer);
